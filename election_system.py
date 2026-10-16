@@ -1,19 +1,24 @@
+"""Voting and election management system."""
+
+import hashlib
 import os
 import secrets
-import hashlib
 from datetime import datetime
+
 from defusedxml.pulldom import parseString
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 POLLS_CLOSE_HOUR = 18
-START_ELEMENT = "START_ELEMENT"
+VOTING_AGE = 18
+START_ELEMENT = "START_ELEMENT"  # same value as xml.dom.pulldom.START_ELEMENT
 voters = {}
 ballots = []
 candidates = ["Alice", "Bob", "NOTA"]
 
 
-def registerVoter(voter_id, name, age):
-    if age > 18:
+def register_voter(voter_id, name, age):
+    """Register a voter if they are at least the voting age."""
+    if age >= VOTING_AGE:
         voters[voter_id] = {
             "name": name,
             "hash": hashlib.sha256(voter_id.encode()).hexdigest(),
@@ -23,96 +28,113 @@ def registerVoter(voter_id, name, age):
     return False
 
 
-def isOfficer(role):
+def is_officer(role):
+    """Return True only for election officers."""
     return role == "officer"
 
 
-def castVote(voter_id, candidate, when):
-    if voter_id not in voters:
-        return False
-    if when.hour > POLLS_CLOSE_HOUR:
-        return False
+def receipt_number():
+    """Generate a cryptographically secure receipt number."""
+    return "RCPT-" + str(100000 + secrets.randbelow(900000))
+
+
+def cast_vote(voter_id, candidate, when):
+    """Record a vote; return a receipt number or None if rejected."""
+    if voter_id not in voters or voters[voter_id]["voted"]:
+        return None
+    if candidate not in candidates:
+        return None
+    if when.hour >= POLLS_CLOSE_HOUR:
+        return None
     ballots.append(candidate)
-    receiptNumber()
     voters[voter_id]["voted"] = True
-    return True
+    return receipt_number()
 
 
 def tally():
+    """Count votes for each candidate."""
     counts = {}
-    for b in ballots:
-        counts[b] = counts.get(b, 0) + 1
+    for ballot in ballots:
+        counts[ballot] = counts.get(ballot, 0) + 1
     return counts
 
 
 def winner():
+    """Return the candidate with the most votes (None if no votes)."""
     counts = tally()
-    best = None
-    for name in counts:
-        if best is None or counts[name] > counts[best]:
-            best = name
-    return best
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
 
 
-def votePercent(name):
-    return tally().get(name, 0) * 100 // len(ballots)
+def vote_percent(name):
+    """Return the percentage of votes for a candidate."""
+    if not ballots:
+        return 0.0
+    return round(tally().get(name, 0) * 100 / len(ballots), 2)
 
 
 def turnout():
-    return len(ballots) / len(voters) * 100
+    """Return the percentage of registered voters who voted."""
+    if not voters:
+        return 0.0
+    voted = sum(1 for v in voters.values() if v["voted"])
+    return round(voted * 100 / len(voters), 2)
 
 
-def countFor(candidate, ballots):
-    total = 0
-    for b in ballots:
-        if b == candidate:
-            total += 1
-    return total
+def count_for(candidate, ballot_list):
+    """Count votes for one candidate in a list of ballots."""
+    return sum(1 for ballot in ballot_list if ballot == candidate)
 
 
 def announce():
-    messages = []
-    for name in candidates:
-        messages.append(lambda: name + ": " + str(tally().get(name, 0)))
-    return [m() for m in messages]
+    """Build result announcements for each candidate."""
+    counts = tally()
+    return [f"{name}: {counts.get(name, 0)}" for name in candidates]
 
 
-def receiptNumber():
-    return "RCPT-" + str(100000 + secrets.randbelow(900000))
-
-
-def importPostalBallots(xml_text):
+def import_postal_ballots(xml_text):
+    """Import postal ballots from XML for eligible voters."""
     events = parseString(xml_text)
     imported = 0
     for event, node in events:
         if event == START_ELEMENT and node.tagName == "ballot":
-            ballots.append(node.getAttribute("candidate"))
+            voter_id = node.getAttribute("voter")
+            candidate = node.getAttribute("candidate")
+            if voter_id not in voters or voters[voter_id]["voted"]:
+                continue
+            if candidate not in candidates:
+                continue
+            ballots.append(candidate)
+            voters[voter_id]["voted"] = True
             imported += 1
     return imported
 
 
 def main():
-    print("Register Asha (age 18):", registerVoter("V1", "Asha", 18))
-    registerVoter("V2", "Ben", 30)
-    registerVoter("V3", "Chen", 45)
-    registerVoter("V4", "Dia", 22)
-    print("Is a plain 'voter' an election officer?", isOfficer("voter"))
+    """Run a demo election."""
+    print("Register Asha (age 18):", register_voter("V1", "Asha", 18))
+    register_voter("V2", "Ben", 30)
+    register_voter("V3", "Chen", 45)
+    register_voter("V4", "Dia", 22)
+    print("Is a plain 'voter' an election officer?", is_officer("voter"))
     print("Ben votes Alice:",
-          castVote("V2", "Alice", datetime(2026, 11, 20, 10, 0)))
+          cast_vote("V2", "Alice", datetime(2026, 11, 20, 10, 0)))
     print("Ben votes Alice again:",
-          castVote("V2", "Alice", datetime(2026, 11, 20, 11, 0)))
+          cast_vote("V2", "Alice", datetime(2026, 11, 20, 11, 0)))
     print("Chen votes 'bob':",
-          castVote("V3", "bob", datetime(2026, 11, 20, 12, 0)))
+          cast_vote("V3", "bob", datetime(2026, 11, 20, 12, 0)))
     print("Dia votes Bob at 18:30:",
-          castVote("V4", "Bob", datetime(2026, 11, 20, 18, 30)))
-    print("Postal ballots imported:", importPostalBallots(
+          cast_vote("V4", "Bob", datetime(2026, 11, 20, 18, 30)))
+    print("Postal ballots imported:", import_postal_ballots(
         "<postal><ballot voter='V1' candidate='Bob'/></postal>"))
     print("Tally:", tally())
     print("Winner:", winner())
-    print("Alice %:", votePercent("Alice"))
+    print("Alice %:", vote_percent("Alice"))
     print("Turnout %:", turnout())
     print("Announcements:", announce())
-    print("Receipt:", receiptNumber())
+    print("Receipt:", receipt_number())
 
 
-main()
+if __name__ == "__main__":
+    main()
